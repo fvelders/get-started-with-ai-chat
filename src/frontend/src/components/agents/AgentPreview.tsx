@@ -12,6 +12,7 @@ import { SettingsPanel } from "../core/SettingsPanel";
 import { AgentPreviewChatBot } from "./AgentPreviewChatBot";
 import { MenuButton } from "../core/MenuButton/MenuButton";
 import { IChatItem } from "./chatbot/types";
+import config from "~/config";
 
 import styles from "./AgentPreview.module.css";
 
@@ -88,8 +89,8 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
       // IMPORTANT: Add credentials: 'include' if server cookies are critical
       // and if your backend is on the same domain or properly configured for cross-site cookies.
 
-      setIsResponding(true);      
-      const response = await fetch("/chat", {
+      setIsResponding(true);
+      const response = await fetch(config.chatEndpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

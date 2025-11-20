@@ -13,6 +13,7 @@ from azure.ai.inference.aio import ChatCompletionsClient, EmbeddingsClient
 from azure.identity import AzureDeveloperCliCredential, ManagedIdentityCredential
 from dotenv import load_dotenv
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 
 from .search_index_manager import SearchIndexManager
 from .util import get_logger
@@ -138,6 +139,19 @@ def create_app():
         logger.info("Tracing is not enabled")
 
     app = fastapi.FastAPI(lifespan=lifespan)
+
+    # Configure CORS for separated frontend/backend deployment
+    cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
+    logger.info(f"CORS configured for origins: {cors_origins}")
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,  # Can be configured via CORS_ORIGINS env var
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     app.mount("/static", StaticFiles(directory="api/static"), name="static")
 
     from . import routes  # noqa
