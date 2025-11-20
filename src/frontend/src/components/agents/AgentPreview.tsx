@@ -11,6 +11,7 @@ import { AgentIcon } from "./AgentIcon";
 import { SettingsPanel } from "../core/SettingsPanel";
 import { AgentPreviewChatBot } from "./AgentPreviewChatBot";
 import { MenuButton } from "../core/MenuButton/MenuButton";
+import { ModelSelector } from "../core/ModelSelector";
 import { IChatItem } from "./chatbot/types";
 import config from "~/config";
 
@@ -47,6 +48,7 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
   const [isSettingsPanelOpen, setIsSettingsPanelOpen] = useState(false);
   const [messageList, setMessageList] = useState<IChatItem[]>([]);
   const [isResponding, setIsResponding] = useState(false);
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
 
 
 
@@ -85,7 +87,10 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
         role: item.role,
         content: item.content,
       }));
-      const postData = {messages};
+      const postData = {
+        messages,
+        model: selectedModel, // Include selected model in request
+      };
       // IMPORTANT: Add credentials: 'include' if server cookies are critical
       // and if your backend is on the same domain or properly configured for cross-site cookies.
 
@@ -362,19 +367,22 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
           )}
         </div>
         <div className={styles.rightSection}>
-          {" "}
+          <ModelSelector
+            selectedModel={selectedModel}
+            onModelChange={setSelectedModel}
+          />
           <Button
             appearance="subtle"
             icon={<ChatRegular aria-hidden={true} />}
             onClick={newThread}
           >
             New Chat
-          </Button>{" "}
+          </Button>
           <MenuButton
             menuButtonText=""
             menuItems={menuItems}
             menuButtonProps={{
-              appearance: "subtle",
+              appearance="subtle",
               icon: <MoreHorizontalRegular />,
               "aria-label": "Settings",
             }}

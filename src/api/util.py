@@ -48,3 +48,4 @@ class Message(pydantic.BaseModel):
 
 class ChatRequest(pydantic.BaseModel):
     messages: list[Message]
+    model: Optional[str] = None  # Optional model selection from frontend

@@ -33,6 +33,11 @@ class ModelProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_available_models(self) -> List[Dict[str, str]]:
+        """Get list of available models."""
+        pass
+
+    @abstractmethod
     async def close(self):
         """Cleanup resources."""
         pass
@@ -41,9 +46,21 @@ class ModelProvider(ABC):
 class AzureOpenAIProvider(ModelProvider):
     """Provider for Azure OpenAI Service."""
 
-    def __init__(self, chat_client, default_model: str):
+    def __init__(self, chat_client, default_model: str, available_models: List[str] = None):
         self.chat_client = chat_client
         self.default_model = default_model
+        self.available_models = available_models or [default_model]
+
+    async def get_available_models(self) -> List[Dict[str, str]]:
+        """Get list of available Azure OpenAI models."""
+        return [
+            {
+                "id": model,
+                "name": model,
+                "provider": "azure"
+            }
+            for model in self.available_models
+        ]
 
     async def complete(
         self,
@@ -93,6 +110,69 @@ class OpenAICompatibleProvider(ModelProvider):
         """Ensure aiohttp session exists."""
         if self.session is None:
             self.session = aiohttp.ClientSession()
+
+    async def get_available_models(self) -> List[Dict[str, str]]:
+        """Get list of available models from the API."""
+        await self._ensure_session()
+
+        try:
+            # Try to get models from /v1/models endpoint (OpenAI-compatible)
+            endpoint = f"{self.base_url}/v1/models"
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+
+            async with self.session.get(endpoint, headers=headers, timeout=5) as response:
+                if response.ok:
+                    data = await response.json()
+                    models = []
+
+                    # Handle different response formats
+                    if isinstance(data, dict) and 'data' in data:
+                        # OpenAI format
+                        for model in data['data']:
+                            model_id = model.get('id', model.get('name', 'unknown'))
+                            models.append({
+                                "id": model_id,
+                                "name": model_id,
+                                "provider": "local"
+                            })
+                    elif isinstance(data, dict) and 'models' in data:
+                        # Ollama format
+                        for model in data['models']:
+                            model_name = model.get('name', model.get('model', 'unknown'))
+                            models.append({
+                                "id": model_name,
+                                "name": model_name,
+                                "provider": "ollama"
+                            })
+                    elif isinstance(data, list):
+                        # Simple list format
+                        for model in data:
+                            if isinstance(model, str):
+                                models.append({
+                                    "id": model,
+                                    "name": model,
+                                    "provider": "local"
+                                })
+                            elif isinstance(model, dict):
+                                model_id = model.get('id', model.get('name', 'unknown'))
+                                models.append({
+                                    "id": model_id,
+                                    "name": model_id,
+                                    "provider": "local"
+                                })
+
+                    if models:
+                        return models
+
+        except Exception as e:
+            logger.warning(f"Could not fetch models from API: {e}")
+
+        # Fallback: return default model
+        return [{
+            "id": self.default_model,
+            "name": self.default_model,
+            "provider": "local"
+        }]
 
     async def complete(
         self,

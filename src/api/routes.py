@@ -78,11 +78,27 @@ def serialize_sse_event(data: Dict) -> str:
 @router.get("/", response_class=HTMLResponse)
 async def index_name(request: Request, _ = auth_dependency):
     return templates.TemplateResponse(
-        "index.html", 
+        "index.html",
         {
             "request": request,
         }
     )
+
+@router.get("/models")
+async def get_models(
+    model_provider = Depends(get_model_provider),
+    _ = auth_dependency
+):
+    """Get list of available models."""
+    if model_provider is None:
+        return {"error": "Model provider not initialized"}, 500
+
+    try:
+        models = await model_provider.get_available_models()
+        return {"models": models}
+    except Exception as e:
+        logger.error(f"Error fetching models: {e}")
+        return {"error": str(e)}, 500
 
 @router.post("/chat")
 async def chat_stream_handler(
@@ -103,6 +119,10 @@ async def chat_stream_handler(
 
     async def response_stream():
         messages = [{"role": message.role, "content": message.content} for message in chat_request.messages]
+
+        # Use model from request if provided, otherwise use default
+        selected_model = chat_request.model or model_deployment_name
+        logger.info(f"Using model: {selected_model}")
 
         # Build system prompt
         system_prompt = "You are a helpful assistant"
@@ -126,9 +146,9 @@ async def chat_stream_handler(
         try:
             accumulated_message = ""
 
-            # Use model provider's complete method
+            # Use model provider's complete method with selected model
             async for event in model_provider.complete(
-                model=model_deployment_name,
+                model=selected_model,
                 messages=full_messages,
                 stream=True
             ):
