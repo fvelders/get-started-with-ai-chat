@@ -60,8 +60,8 @@ templates = Jinja2Templates(directory="api/templates")
 
 
 # Accessors to get app state
-def get_chat_client(request: Request) -> ChatCompletionsClient:
-    return request.app.state.chat
+def get_model_provider(request: Request):
+    return request.app.state.model_provider
 
 
 def get_chat_model(request: Request) -> str:
@@ -87,51 +87,62 @@ async def index_name(request: Request, _ = auth_dependency):
 @router.post("/chat")
 async def chat_stream_handler(
     chat_request: ChatRequest,
-    chat_client: ChatCompletionsClient = Depends(get_chat_client),
+    model_provider = Depends(get_model_provider),
     model_deployment_name: str = Depends(get_chat_model),
     search_index_manager: SearchIndexManager = Depends(get_search_index_namager),
     _ = auth_dependency
 ) -> fastapi.responses.StreamingResponse:
-    
+
     headers = {
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
         "Content-Type": "text/event-stream"
-    }    
-    if chat_client is None:
-        raise Exception("Chat client not initialized")
+    }
+    if model_provider is None:
+        raise Exception("Model provider not initialized")
 
     async def response_stream():
         messages = [{"role": message.role, "content": message.content} for message in chat_request.messages]
 
-        prompt_messages = PromptTemplate.from_string('You are a helpful assistant').create_messages()
+        # Build system prompt
+        system_prompt = "You are a helpful assistant"
+
         # Use RAG model, only if we were provided index and we have found a context there.
         if search_index_manager is not None:
             context = await search_index_manager.search(chat_request)
             if context:
-                prompt_messages = PromptTemplate.from_string(
+                system_prompt = (
                     'You are a helpful assistant that answers some questions '
                     'with the help of some context data.\n\nHere is '
-                    'the context data:\n\n{{context}}').create_messages(data=dict(context=context))
-                logger.info(f"{prompt_messages=}")
+                    f'the context data:\n\n{context}'
+                )
+                logger.info("Using RAG context for response")
             else:
                 logger.info("Unable to find the relevant information in the index for the request.")
+
+        # Prepend system message
+        full_messages = [{"role": "system", "content": system_prompt}] + messages
+
         try:
             accumulated_message = ""
-            chat_coroutine = await chat_client.complete(
-                model=model_deployment_name, messages=prompt_messages + messages, stream=True
-            )
-            async for event in chat_coroutine:
-                if event.choices:
-                    first_choice = event.choices[0]
-                    if first_choice.delta.content:
-                        message = first_choice.delta.content
-                        accumulated_message += message
-                        yield serialize_sse_event({
-                                        "content": message,
-                                        "type": "message",
-                                    }
-                                )
+
+            # Use model provider's complete method
+            async for event in model_provider.complete(
+                model=model_deployment_name,
+                messages=full_messages,
+                stream=True
+            ):
+                if "error" in event:
+                    yield serialize_sse_event(event)
+                    return
+
+                content = event.get("content", "")
+                if content:
+                    accumulated_message += content
+                    yield serialize_sse_event({
+                        "content": content,
+                        "type": "message",
+                    })
 
             yield serialize_sse_event({
                 "content": accumulated_message,

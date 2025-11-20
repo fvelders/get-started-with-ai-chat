@@ -17,93 +17,141 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .search_index_manager import SearchIndexManager
 from .util import get_logger
+from .model_providers import create_model_provider
 
 logger = None
 enable_trace = False
 
 @contextlib.asynccontextmanager
 async def lifespan(app: fastapi.FastAPI):
-    azure_credential: Union[AzureDeveloperCliCredential, ManagedIdentityCredential]
-    if not os.getenv("RUNNING_IN_PRODUCTION"):
-        if tenant_id := os.getenv("AZURE_TENANT_ID"):
-            logger.info("Using AzureDeveloperCliCredential with tenant_id %s", tenant_id)
-            azure_credential = AzureDeveloperCliCredential(tenant_id=tenant_id)
-        else:
-            logger.info("Using AzureDeveloperCliCredential")
-            azure_credential = AzureDeveloperCliCredential()
-    else:
-        # User-assigned identity was created and set in api.bicep
-        user_identity_client_id = os.getenv("AZURE_CLIENT_ID")
-        logger.info("Using ManagedIdentityCredential with client_id %s", user_identity_client_id)
-        azure_credential = ManagedIdentityCredential(client_id=user_identity_client_id)
+    # Determine model provider type from environment
+    model_provider_type = os.getenv("MODEL_PROVIDER", "azure").lower()
+    logger.info(f"Using model provider: {model_provider_type}")
 
-    endpoint = os.environ["AZURE_EXISTING_AIPROJECT_ENDPOINT"]
-    project = AIProjectClient(
-        credential=azure_credential,
-        endpoint=endpoint,
-    )
-
-    if enable_trace:
-        application_insights_connection_string = ""
-        try:
-            application_insights_connection_string = await project.telemetry.get_application_insights_connection_string()
-        except Exception as e:
-            e_string = str(e)
-            logger.error("Failed to get Application Insights connection string, error: %s", e_string)
-        if not application_insights_connection_string:
-            logger.error("Application Insights was not enabled for this project.")
-            logger.error("Enable it via the 'Tracing' tab in your AI Foundry project page.")
-            exit()
-        else:
-            from azure.monitor.opentelemetry import configure_azure_monitor
-            configure_azure_monitor(connection_string=application_insights_connection_string)
-
-
-    # Project endpoint has the form:   https://your-ai-services-account-name.services.ai.azure.com/api/projects/your-project-name
-    # Inference endpoint has the form: https://your-ai-services-account-name.services.ai.azure.com/models
-    # Strip the "/api/projects/your-project-name" part and replace with "/models":
-    inference_endpoint = f"https://{urlparse(endpoint).netloc}/models"
-
-    chat =  ChatCompletionsClient(
-        endpoint=inference_endpoint,
-        credential=azure_credential,
-        credential_scopes=["https://ai.azure.com/.default"],
-    )
-    embed =  EmbeddingsClient(
-        endpoint=inference_endpoint,
-        credential=azure_credential,
-        credential_scopes=["https://ai.azure.com/.default"],
-    )
-
-    endpoint = os.environ.get('AZURE_AI_SEARCH_ENDPOINT')
+    model_provider = None
+    project = None
     search_index_manager = None
-    embed_dimensions = None
-    if os.getenv('AZURE_AI_EMBED_DIMENSIONS'):
-        embed_dimensions = int(os.getenv('AZURE_AI_EMBED_DIMENSIONS'))
-        
-    if endpoint and os.getenv('AZURE_AI_SEARCH_INDEX_NAME') and os.getenv('AZURE_AI_EMBED_DEPLOYMENT_NAME'):
-        search_index_manager = SearchIndexManager(
-            endpoint = endpoint,
-            credential = azure_credential,
-            index_name = os.getenv('AZURE_AI_SEARCH_INDEX_NAME'),
-            dimensions = embed_dimensions,
-            model = os.getenv('AZURE_AI_EMBED_DEPLOYMENT_NAME'),
-            embeddings_client=embed
-        )
-        # Create index and upload the documents only if index does not exist.
-        logger.info(f"Creating index {os.getenv('AZURE_AI_SEARCH_INDEX_NAME')}.")
-        await search_index_manager.ensure_index_created(
-            vector_index_dimensions=embed_dimensions if embed_dimensions else 100)
-    else:
-        logger.info("The RAG search will not be used.")
+    azure_credential = None
 
-    app.state.chat = chat
+    # Setup model provider based on type
+    if model_provider_type == "azure":
+        # Azure OpenAI setup
+        if not os.getenv("RUNNING_IN_PRODUCTION"):
+            if tenant_id := os.getenv("AZURE_TENANT_ID"):
+                logger.info("Using AzureDeveloperCliCredential with tenant_id %s", tenant_id)
+                azure_credential = AzureDeveloperCliCredential(tenant_id=tenant_id)
+            else:
+                logger.info("Using AzureDeveloperCliCredential")
+                azure_credential = AzureDeveloperCliCredential()
+        else:
+            # User-assigned identity was created and set in api.bicep
+            user_identity_client_id = os.getenv("AZURE_CLIENT_ID")
+            logger.info("Using ManagedIdentityCredential with client_id %s", user_identity_client_id)
+            azure_credential = ManagedIdentityCredential(client_id=user_identity_client_id)
+
+        endpoint = os.environ["AZURE_EXISTING_AIPROJECT_ENDPOINT"]
+        project = AIProjectClient(
+            credential=azure_credential,
+            endpoint=endpoint,
+        )
+
+        if enable_trace and project:
+            application_insights_connection_string = ""
+            try:
+                application_insights_connection_string = await project.telemetry.get_application_insights_connection_string()
+            except Exception as e:
+                e_string = str(e)
+                logger.error("Failed to get Application Insights connection string, error: %s", e_string)
+            if not application_insights_connection_string:
+                logger.error("Application Insights was not enabled for this project.")
+                logger.error("Enable it via the 'Tracing' tab in your AI Foundry project page.")
+            else:
+                from azure.monitor.opentelemetry import configure_azure_monitor
+                configure_azure_monitor(connection_string=application_insights_connection_string)
+
+        # Project endpoint has the form:   https://your-ai-services-account-name.services.ai.azure.com/api/projects/your-project-name
+        # Inference endpoint has the form: https://your-ai-services-account-name.services.ai.azure.com/models
+        # Strip the "/api/projects/your-project-name" part and replace with "/models":
+        inference_endpoint = f"https://{urlparse(endpoint).netloc}/models"
+
+        chat = ChatCompletionsClient(
+            endpoint=inference_endpoint,
+            credential=azure_credential,
+            credential_scopes=["https://ai.azure.com/.default"],
+        )
+        embed = EmbeddingsClient(
+            endpoint=inference_endpoint,
+            credential=azure_credential,
+            credential_scopes=["https://ai.azure.com/.default"],
+        )
+
+        # Create Azure model provider
+        model_provider = create_model_provider(
+            provider_type="azure",
+            chat_client=chat,
+            default_model=os.environ.get("AZURE_AI_CHAT_DEPLOYMENT_NAME", "gpt-4o-mini")
+        )
+
+        # Setup RAG/Search if configured
+        search_endpoint = os.environ.get('AZURE_AI_SEARCH_ENDPOINT')
+        embed_dimensions = None
+        if os.getenv('AZURE_AI_EMBED_DIMENSIONS'):
+            embed_dimensions = int(os.getenv('AZURE_AI_EMBED_DIMENSIONS'))
+
+        if search_endpoint and os.getenv('AZURE_AI_SEARCH_INDEX_NAME') and os.getenv('AZURE_AI_EMBED_DEPLOYMENT_NAME'):
+            search_index_manager = SearchIndexManager(
+                endpoint=search_endpoint,
+                credential=azure_credential,
+                index_name=os.getenv('AZURE_AI_SEARCH_INDEX_NAME'),
+                dimensions=embed_dimensions,
+                model=os.getenv('AZURE_AI_EMBED_DEPLOYMENT_NAME'),
+                embeddings_client=embed
+            )
+            # Create index and upload the documents only if index does not exist.
+            logger.info(f"Creating index {os.getenv('AZURE_AI_SEARCH_INDEX_NAME')}.")
+            await search_index_manager.ensure_index_created(
+                vector_index_dimensions=embed_dimensions if embed_dimensions else 100)
+        else:
+            logger.info("The RAG search will not be used.")
+
+    elif model_provider_type == "local" or model_provider_type == "openai-compatible":
+        # Self-hosted or OpenAI-compatible API setup
+        base_url = os.environ.get("MODEL_BASE_URL")
+        if not base_url:
+            logger.error("MODEL_BASE_URL is required for local/openai-compatible provider")
+            raise ValueError("MODEL_BASE_URL is required for local provider")
+
+        model_name = os.environ.get("MODEL_NAME", "default")
+        api_key = os.environ.get("MODEL_API_KEY", "not-needed")
+
+        logger.info(f"Connecting to model at: {base_url}")
+        logger.info(f"Using model: {model_name}")
+
+        # Create OpenAI-compatible model provider
+        model_provider = create_model_provider(
+            provider_type="openai-compatible",
+            base_url=base_url,
+            default_model=model_name,
+            api_key=api_key
+        )
+
+        logger.info("RAG search is not available with local models")
+
+    else:
+        raise ValueError(f"Unknown MODEL_PROVIDER: {model_provider_type}")
+
+    # Store in app state
+    app.state.model_provider = model_provider
     app.state.search_index_manager = search_index_manager
-    app.state.chat_model = os.environ["AZURE_AI_CHAT_DEPLOYMENT_NAME"]
+    app.state.chat_model = os.environ.get("AZURE_AI_CHAT_DEPLOYMENT_NAME") or os.environ.get("MODEL_NAME", "default")
+
     yield
 
-    await project.close()
-    await chat.close()
+    # Cleanup
+    if project:
+        await project.close()
+    if model_provider:
+        await model_provider.close()
     if search_index_manager is not None:
         await search_index_manager.close()
 
