@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.nas-backend
+    container_name: ai-chat-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./src/.env
+    volumes:
+      # Mount de API code voor development (optioneel, verwijder voor productie)
+      - ./src/api:/app/api:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - ai-chat-network
+
+networks:
+  ai-chat-network:
+    driver: bridge
